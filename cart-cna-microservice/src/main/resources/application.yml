@@ -1,5 +1,89 @@
 spring:
+  application:
+    name: cart-service
   redis:
-    host: ${SPRING_REDIS_HOST}
-    port: ${SPRING_REDIS_PORT}
-    password: ${SPRING_REDIS_PASSWORD}
+    host: ${SPRING_REDIS_HOST:localhost}
+    port: ${SPRING_REDIS_PORT:6379}
+    password: ${SPRING_REDIS_PASSWORD:}
+    timeout: ${SPRING_REDIS_TIMEOUT:2000}
+    lettuce:
+      pool:
+        max-active: ${REDIS_POOL_MAX_ACTIVE:8}
+        max-idle: ${REDIS_POOL_MAX_IDLE:8}
+        min-idle: ${REDIS_POOL_MIN_IDLE:0}
+        max-wait: ${REDIS_POOL_MAX_WAIT:-1}
+  
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,env
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+      show-components: always
+    metrics:
+      enabled: true
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5, 0.95, 0.99
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
+    zipkin:
+      endpoint: ${ZIPKIN_ENDPOINT:http://jaeger-collector.tracing.svc.cluster.local:9411/api/v2/spans}
+      
+logging:
+  level:
+    com.ecommerce.cart: ${LOG_LEVEL:INFO}
+    org.springframework.data.redis: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n"
+  file:
+    name: ${LOG_FILE:/var/log/cart-service.log}
+    
+cart:
+  cache:
+    ttl: ${CART_CACHE_TTL:3600}
+    prefix: ${CART_CACHE_PREFIX:cart:}
+  circuit-breaker:
+    failure-rate-threshold: ${CB_FAILURE_RATE_THRESHOLD:50}
+    wait-duration-in-open-state: ${CB_WAIT_DURATION:10000}
+    sliding-window-size: ${CB_SLIDING_WINDOW_SIZE:10}
+    
+resilience4j:
+  circuitbreaker:
+    instances:
+      cartService:
+        register-health-indicator: true
+        sliding-window-size: 10
+        permitted-number-of-calls-in-half-open-state: 3
+        sliding-window-type: count_based
+        wait-duration-in-open-state: 10s
+        failure-rate-threshold: 50
+        automatic-transition-from-open-to-half-open-enabled: true
+  retry:
+    instances:
+      cartService:
+        max-attempts: 3
+        wait-duration: 1s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+  timelimiter:
+    instances:
+      cartService:
+        timeout-duration: 2s

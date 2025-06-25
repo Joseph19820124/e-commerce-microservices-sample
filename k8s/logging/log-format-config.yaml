@@ -1,0 +1,351 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logging-config
+  namespace: default
+data:
+  logback-spring.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+        <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+        
+        <!-- Console Appender for local development -->
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+                <providers>
+                    <timestamp/>
+                    <logLevel/>
+                    <loggerName/>
+                    <mdc/>
+                    <pattern>
+                        <pattern>
+                            {
+                                "timestamp": "%d{yyyy-MM-dd'T'HH:mm:ss.SSSZ}",
+                                "level": "%level",
+                                "thread": "%thread",
+                                "logger": "%logger{36}",
+                                "message": "%message",
+                                "service": "${SERVICE_NAME:-unknown}",
+                                "version": "${SERVICE_VERSION:-unknown}",
+                                "environment": "${ENVIRONMENT:-unknown}",
+                                "pod": "${HOSTNAME:-unknown}",
+                                "traceId": "%X{traceId:-}",
+                                "spanId": "%X{spanId:-}",
+                                "userId": "%X{userId:-}",
+                                "correlationId": "%X{correlationId:-}",
+                                "operation": "%X{operation:-}",
+                                "duration": "%X{duration:-}",
+                                "statusCode": "%X{statusCode:-}",
+                                "exception": "%ex"
+                            }
+                        </pattern>
+                    </pattern>
+                </providers>
+            </encoder>
+        </appender>
+        
+        <!-- File Appender for production -->
+        <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>/var/log/application.log</file>
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <fileNamePattern>/var/log/application.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+                <maxFileSize>100MB</maxFileSize>
+                <maxHistory>30</maxHistory>
+                <totalSizeCap>10GB</totalSizeCap>
+            </rollingPolicy>
+            <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+                <providers>
+                    <timestamp/>
+                    <logLevel/>
+                    <loggerName/>
+                    <mdc/>
+                    <pattern>
+                        <pattern>
+                            {
+                                "timestamp": "%d{yyyy-MM-dd'T'HH:mm:ss.SSSZ}",
+                                "level": "%level",
+                                "thread": "%thread",
+                                "logger": "%logger{36}",
+                                "message": "%message",
+                                "service": "${SERVICE_NAME:-unknown}",
+                                "version": "${SERVICE_VERSION:-unknown}",
+                                "environment": "${ENVIRONMENT:-unknown}",
+                                "pod": "${HOSTNAME:-unknown}",
+                                "traceId": "%X{traceId:-}",
+                                "spanId": "%X{spanId:-}",
+                                "userId": "%X{userId:-}",
+                                "correlationId": "%X{correlationId:-}",
+                                "operation": "%X{operation:-}",
+                                "duration": "%X{duration:-}",
+                                "statusCode": "%X{statusCode:-}",
+                                "exception": "%ex"
+                            }
+                        </pattern>
+                    </pattern>
+                </providers>
+            </encoder>
+        </appender>
+        
+        <!-- Audit Appender -->
+        <appender name="AUDIT" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>/var/log/audit.log</file>
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <fileNamePattern>/var/log/audit.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+                <maxFileSize>100MB</maxFileSize>
+                <maxHistory>90</maxHistory>
+                <totalSizeCap>50GB</totalSizeCap>
+            </rollingPolicy>
+            <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+                <providers>
+                    <timestamp/>
+                    <pattern>
+                        <pattern>
+                            {
+                                "timestamp": "%d{yyyy-MM-dd'T'HH:mm:ss.SSSZ}",
+                                "eventType": "AUDIT",
+                                "service": "${SERVICE_NAME:-unknown}",
+                                "userId": "%X{userId:-}",
+                                "action": "%X{action:-}",
+                                "resource": "%X{resource:-}",
+                                "outcome": "%X{outcome:-}",
+                                "ip": "%X{ip:-}",
+                                "userAgent": "%X{userAgent:-}",
+                                "traceId": "%X{traceId:-}",
+                                "message": "%message"
+                            }
+                        </pattern>
+                    </pattern>
+                </providers>
+            </encoder>
+        </appender>
+        
+        <!-- Logger for audit events -->
+        <logger name="AUDIT" level="INFO" additivity="false">
+            <appender-ref ref="AUDIT"/>
+        </logger>
+        
+        <!-- Root logger -->
+        <root level="${LOG_LEVEL:-INFO}">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="FILE"/>
+        </root>
+        
+        <!-- Reduce noise from third-party libraries -->
+        <logger name="org.springframework" level="WARN"/>
+        <logger name="org.hibernate" level="WARN"/>
+        <logger name="com.zaxxer.hikari" level="WARN"/>
+        <logger name="org.apache.kafka" level="WARN"/>
+        <logger name="io.lettuce" level="WARN"/>
+    </configuration>
+  winston-config.js: |
+    const winston = require('winston');
+    const { ElasticsearchTransport } = require('winston-elasticsearch');
+    
+    const logFormat = winston.format.combine(
+      winston.format.timestamp({ format: 'YYYY-MM-DDTHH:mm:ss.SSSZ' }),
+      winston.format.errors({ stack: true }),
+      winston.format.json(),
+      winston.format.printf(({ timestamp, level, message, service, traceId, spanId, userId, correlationId, operation, duration, statusCode, stack, ...meta }) => {
+        return JSON.stringify({
+          timestamp,
+          level,
+          message,
+          service: process.env.SERVICE_NAME || 'unknown',
+          version: process.env.SERVICE_VERSION || 'unknown',
+          environment: process.env.ENVIRONMENT || 'unknown',
+          pod: process.env.HOSTNAME || 'unknown',
+          traceId: traceId || '',
+          spanId: spanId || '',
+          userId: userId || '',
+          correlationId: correlationId || '',
+          operation: operation || '',
+          duration: duration || '',
+          statusCode: statusCode || '',
+          stack,
+          ...meta
+        });
+      })
+    );
+    
+    const logger = winston.createLogger({
+      level: process.env.LOG_LEVEL || 'info',
+      format: logFormat,
+      transports: [
+        new winston.transports.Console(),
+        new winston.transports.File({
+          filename: '/var/log/application.log',
+          maxsize: 100 * 1024 * 1024, // 100MB
+          maxFiles: 30,
+          tailable: true
+        }),
+        new ElasticsearchTransport({
+          level: 'info',
+          clientOpts: {
+            node: process.env.ELASTICSEARCH_URL || 'http://elasticsearch-es-http.logging.svc.cluster.local:9200'
+          },
+          index: 'logstash-' + new Date().toISOString().slice(0, 10).replace(/-/g, '.')
+        })
+      ]
+    });
+    
+    // Audit logger
+    const auditLogger = winston.createLogger({
+      level: 'info',
+      format: winston.format.combine(
+        winston.format.timestamp({ format: 'YYYY-MM-DDTHH:mm:ss.SSSZ' }),
+        winston.format.json(),
+        winston.format.printf(({ timestamp, userId, action, resource, outcome, ip, userAgent, traceId, message, ...meta }) => {
+          return JSON.stringify({
+            timestamp,
+            eventType: 'AUDIT',
+            service: process.env.SERVICE_NAME || 'unknown',
+            userId: userId || '',
+            action: action || '',
+            resource: resource || '',
+            outcome: outcome || '',
+            ip: ip || '',
+            userAgent: userAgent || '',
+            traceId: traceId || '',
+            message,
+            ...meta
+          });
+        })
+      ),
+      transports: [
+        new winston.transports.File({
+          filename: '/var/log/audit.log',
+          maxsize: 100 * 1024 * 1024, // 100MB
+          maxFiles: 90,
+          tailable: true
+        })
+      ]
+    });
+    
+    module.exports = { logger, auditLogger };
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: log-parsing-rules
+  namespace: logging
+data:
+  fluent.conf: |
+    <source>
+      @type tail
+      path /var/log/containers/*ecommerce*.log
+      pos_file /var/log/fluentd-containers.log.pos
+      tag kubernetes.*
+      read_from_head true
+      <parse>
+        @type multi_format
+        <pattern>
+          format json
+          time_key timestamp
+          time_format %Y-%m-%dT%H:%M:%S.%L%z
+        </pattern>
+        <pattern>
+          format /^(?<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z)\s+(?<level>\w+)\s+\[(?<traceId>[^\]]*),(?<spanId>[^\]]*)\]\s+(?<logger>\S+)\s+-\s+(?<message>.*)$/
+          time_key timestamp
+          time_format %Y-%m-%dT%H:%M:%S.%LZ
+        </pattern>
+      </parse>
+    </source>
+    
+    <filter kubernetes.**>
+      @type kubernetes_metadata
+      skip_labels false
+      skip_container_metadata false
+      skip_master_url false
+      skip_namespace_metadata false
+    </filter>
+    
+    # Parse structured logs
+    <filter kubernetes.**>
+      @type parser
+      key_name log
+      reserve_data true
+      remove_key_name_field true
+      <parse>
+        @type json
+      </parse>
+    </filter>
+    
+    # Add service information
+    <filter kubernetes.**>
+      @type record_transformer
+      enable_ruby true
+      <record>
+        service ${record["kubernetes"]["labels"]["app"] || "unknown"}
+        version ${record["kubernetes"]["labels"]["version"] || "unknown"}
+        environment ${record["kubernetes"]["labels"]["environment"] || "unknown"}
+        namespace ${record["kubernetes"]["namespace_name"]}
+        pod_name ${record["kubernetes"]["pod_name"]}
+        container_name ${record["kubernetes"]["container_name"]}
+        node_name ${record["kubernetes"]["host"]}
+        cluster "ecommerce-cluster"
+      </record>
+    </filter>
+    
+    # Route different log types
+    <match kubernetes.**>
+      @type copy
+      <store>
+        @type elasticsearch
+        host elasticsearch-es-http.logging.svc.cluster.local
+        port 9200
+        scheme https
+        ssl_verify false
+        user elastic
+        password "#{ENV['ELASTIC_PASSWORD']}"
+        index_name "application-logs-%Y.%m.%d"
+        type_name "_doc"
+        include_tag_key true
+        tag_key @log_name
+        <buffer>
+          @type file
+          path /var/log/fluentd-buffers/kubernetes.application.buffer
+          flush_mode interval
+          retry_type exponential_backoff
+          flush_thread_count 2
+          flush_interval 5s
+          retry_forever
+          retry_max_interval 30
+          chunk_limit_size 2M
+          queue_limit_length 8
+          overflow_action block
+        </buffer>
+      </store>
+      <store>
+        @type elasticsearch
+        host elasticsearch-es-http.logging.svc.cluster.local
+        port 9200
+        scheme https
+        ssl_verify false
+        user elastic
+        password "#{ENV['ELASTIC_PASSWORD']}"
+        index_name "audit-logs-%Y.%m.%d"
+        type_name "_doc"
+        <filter>
+          tag kubernetes.**
+          <and>
+            <regexp>
+              key log
+              pattern /AUDIT/
+            </regexp>
+          </and>
+        </filter>
+        <buffer>
+          @type file
+          path /var/log/fluentd-buffers/kubernetes.audit.buffer
+          flush_mode interval
+          retry_type exponential_backoff
+          flush_thread_count 1
+          flush_interval 10s
+          retry_forever
+          retry_max_interval 30
+          chunk_limit_size 2M
+          queue_limit_length 8
+          overflow_action block
+        </buffer>
+      </store>
+    </match>

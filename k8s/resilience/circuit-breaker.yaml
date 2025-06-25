@@ -1,0 +1,193 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: circuit-breaker-rules
+  namespace: default
+spec:
+  host: "*.default.svc.cluster.local"
+  trafficPolicy:
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 9
+      http:
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        consecutiveGatewayErrors: 3
+        idleTimeout: 60s
+        h2UpgradePolicy: UPGRADE
+  portLevelSettings:
+  - port:
+      number: 80
+    connectionPool:
+      tcp:
+        maxConnections: 50
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 5
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: cart-service-circuit-breaker
+  namespace: default
+spec:
+  host: cart-service.default.svc.cluster.local
+  trafficPolicy:
+    outlierDetection:
+      consecutiveGatewayErrors: 2
+      consecutive5xxErrors: 2
+      interval: 15s
+      baseEjectionTime: 15s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+    connectionPool:
+      tcp:
+        maxConnections: 50
+        connectTimeout: 5s
+      http:
+        http1MaxPendingRequests: 50
+        http2MaxRequests: 50
+        maxRequestsPerConnection: 5
+        maxRetries: 2
+        consecutiveGatewayErrors: 2
+        idleTimeout: 30s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: product-service-circuit-breaker
+  namespace: default
+spec:
+  host: product-service.default.svc.cluster.local
+  trafficPolicy:
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 30
+      minHealthPercent: 70
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 10s
+      http:
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        consecutiveGatewayErrors: 3
+        idleTimeout: 60s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: retry-policy
+  namespace: default
+spec:
+  hosts:
+  - cart-service.default.svc.cluster.local
+  - product-service.default.svc.cluster.local
+  - user-service.default.svc.cluster.local
+  - order-service.default.svc.cluster.local
+  - notification-service.default.svc.cluster.local
+  http:
+  - match:
+    - uri:
+        prefix: /api/
+    route:
+    - destination:
+        host: cart-service.default.svc.cluster.local
+      weight: 100
+    retries:
+      attempts: 3
+      perTryTimeout: 2s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+      retryRemoteLocalities: true
+    timeout: 10s
+    fault:
+      delay:
+        percentage:
+          value: 0.001
+        fixedDelay: 5s
+  - match:
+    - uri:
+        prefix: /api/products
+    route:
+    - destination:
+        host: product-service.default.svc.cluster.local
+      weight: 100
+    retries:
+      attempts: 2
+      perTryTimeout: 3s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+    timeout: 15s
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: resilience-config
+  namespace: default
+data:
+  circuit-breaker.yaml: |
+    circuit-breakers:
+      cart-service:
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        sliding-window-size: 10
+        permitted-number-of-calls-in-half-open-state: 3
+        minimum-number-of-calls: 5
+        slow-call-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+      product-service:
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 15s
+        sliding-window-size: 20
+        permitted-number-of-calls-in-half-open-state: 5
+        minimum-number-of-calls: 10
+        slow-call-rate-threshold: 60
+        slow-call-duration-threshold: 3s
+      user-service:
+        failure-rate-threshold: 40
+        wait-duration-in-open-state: 20s
+        sliding-window-size: 15
+        permitted-number-of-calls-in-half-open-state: 3
+        minimum-number-of-calls: 8
+        slow-call-rate-threshold: 40
+        slow-call-duration-threshold: 1s
+  retry-policy.yaml: |
+    retry-policies:
+      default:
+        max-attempts: 3
+        wait-duration: 1s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        max-wait-duration: 10s
+        retry-exceptions:
+          - java.net.ConnectException
+          - java.net.SocketTimeoutException
+          - org.springframework.web.client.ResourceAccessException
+      critical:
+        max-attempts: 5
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 1.5
+        max-wait-duration: 5s
+      non-critical:
+        max-attempts: 2
+        wait-duration: 2s
+        enable-exponential-backoff: false

@@ -8,7 +8,7 @@ variable "project_name" {
 variable "environment" {
   description = "Environment name"
   type        = string
-  default     = "dev"
+  default     = "staging"
 }
 
 variable "region" {
@@ -21,19 +21,19 @@ variable "region" {
 variable "main_vpc_cidr" {
   description = "CIDR block for VPC"
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "10.1.0.0/16"
 }
 
 variable "public_subnets" {
   description = "List of public subnet CIDR blocks"
   type        = list(string)
-  default     = ["10.0.1.0/24", "10.0.2.0/24"]
+  default     = ["10.1.1.0/24", "10.1.2.0/24"]
 }
 
 variable "private_subnets" {
   description = "List of private subnet CIDR blocks"
   type        = list(string)
-  default     = ["10.0.10.0/24", "10.0.20.0/24"]
+  default     = ["10.1.10.0/24", "10.1.20.0/24"]
 }
 
 # EKS Variables
@@ -52,19 +52,19 @@ variable "node_instance_types" {
 variable "desired_capacity" {
   description = "Desired number of nodes"
   type        = number
-  default     = 2
+  default     = 3
 }
 
 variable "max_capacity" {
   description = "Maximum number of nodes"
   type        = number
-  default     = 4
+  default     = 6
 }
 
 variable "min_capacity" {
   description = "Minimum number of nodes"
   type        = number
-  default     = 1
+  default     = 2
 }
 
 # RDS Variables
@@ -77,19 +77,19 @@ variable "postgres_version" {
 variable "postgres_instance_class" {
   description = "RDS instance class"
   type        = string
-  default     = "db.t3.micro"
+  default     = "db.t3.small"
 }
 
 variable "postgres_allocated_storage" {
   description = "Initial allocated storage in GB"
   type        = number
-  default     = 20
+  default     = 50
 }
 
 variable "postgres_max_allocated_storage" {
   description = "Maximum allocated storage in GB"
   type        = number
-  default     = 100
+  default     = 200
 }
 
 variable "postgres_database_name" {
@@ -107,38 +107,44 @@ variable "postgres_username" {
 variable "postgres_backup_retention" {
   description = "Backup retention period in days"
   type        = number
-  default     = 7
+  default     = 14
 }
 
 variable "postgres_deletion_protection" {
   description = "Enable deletion protection"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "postgres_final_snapshot" {
   description = "Create final snapshot on deletion"
   type        = bool
-  default     = false
+  default     = true
+}
+
+variable "postgres_create_replica" {
+  description = "Create read replica"
+  type        = bool
+  default     = true
 }
 
 # ElastiCache Variables
 variable "redis_node_type" {
   description = "ElastiCache node type"
   type        = string
-  default     = "cache.t3.micro"
+  default     = "cache.t3.small"
 }
 
 variable "redis_num_cache_nodes" {
   description = "Number of cache nodes"
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "redis_multi_az_enabled" {
   description = "Enable Multi-AZ"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "redis_engine_version" {

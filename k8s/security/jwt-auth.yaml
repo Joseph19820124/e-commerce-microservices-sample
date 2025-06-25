@@ -1,0 +1,138 @@
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway
+  jwtRules:
+  - issuer: "https://auth.ecommerce.com/realms/ecommerce"
+    jwksUri: "https://auth.ecommerce.com/realms/ecommerce/protocol/openid-connect/certs"
+    audiences:
+    - "ecommerce-api"
+    - "account"
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-jwt
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      istio: ingressgateway
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["*"]
+  - to:
+    - operation:
+        paths: ["/health", "/metrics", "/ready"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: user-service-authz
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: user-service
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["https://auth.ecommerce.com/realms/ecommerce/*"]
+  - to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        paths: ["/api/users/*"]
+  - when:
+    - key: request.auth.claims[realm_access][roles]
+      values: ["user", "admin"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: admin-only-operations
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: user-service
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["https://auth.ecommerce.com/realms/ecommerce/*"]
+  - to:
+    - operation:
+        methods: ["DELETE"]
+        paths: ["/api/users/*"]
+  - when:
+    - key: request.auth.claims[realm_access][roles]
+      values: ["admin"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: order-service-authz
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: order-service
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["https://auth.ecommerce.com/realms/ecommerce/*"]
+  - to:
+    - operation:
+        methods: ["GET", "POST", "PUT"]
+        paths: ["/api/orders/*"]
+  - when:
+    - key: request.auth.claims[realm_access][roles]
+      values: ["user", "admin"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: cart-service-authz
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: cart-service
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["https://auth.ecommerce.com/realms/ecommerce/*"]
+  - to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        paths: ["/api/cart/*"]
+  - when:
+    - key: request.auth.claims[realm_access][roles]
+      values: ["user", "admin"]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jwt-config
+  namespace: default
+data:
+  jwks.json: |
+    {
+      "keys": [
+        {
+          "kty": "RSA",
+          "use": "sig",
+          "kid": "keycloak-key",
+          "x5t": "example",
+          "n": "example-modulus",
+          "e": "AQAB",
+          "x5c": ["example-cert"],
+          "alg": "RS256"
+        }
+      ]
+    }

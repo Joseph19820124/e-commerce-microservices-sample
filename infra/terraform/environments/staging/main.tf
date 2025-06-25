@@ -3,7 +3,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Environment = "dev"
+      Environment = "staging"
       Project     = "ecommerce-microservices"
       ManagedBy   = "terraform"
     }
@@ -103,6 +103,7 @@ module "rds" {
   backup_retention_period = var.postgres_backup_retention
   deletion_protection     = var.postgres_deletion_protection
   final_snapshot         = var.postgres_final_snapshot
+  create_replica         = var.postgres_create_replica
   
   tags = {
     Environment = var.environment

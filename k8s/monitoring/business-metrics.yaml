@@ -1,0 +1,268 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: business-metrics-rules
+  namespace: monitoring
+data:
+  business-rules.yaml: |
+    groups:
+    - name: ecommerce.business.metrics
+      interval: 30s
+      rules:
+      # Order Success Rate (SLI)
+      - record: ecommerce:order_success_rate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="order-service", code=~"2.."}[5m])) /
+            sum(rate(http_requests_total{job="order-service"}[5m]))
+          ) * 100
+      
+      # Cart Conversion Rate
+      - record: ecommerce:cart_conversion_rate
+        expr: |
+          (
+            sum(rate(order_created_total[5m])) /
+            sum(rate(cart_item_added_total[5m]))
+          ) * 100
+          
+      # Average Order Value
+      - record: ecommerce:average_order_value
+        expr: |
+          sum(rate(order_total_value[5m])) /
+          sum(rate(order_created_total[5m]))
+          
+      # Product Availability Rate
+      - record: ecommerce:product_availability_rate
+        expr: |
+          (
+            sum(product_inventory{inventory > 0}) /
+            sum(product_inventory)
+          ) * 100
+          
+      # API Response Time P95
+      - record: ecommerce:api_response_time_p95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job=~".*-service"}[5m])) by (le, service)
+          )
+          
+      # Error Rate by Service
+      - record: ecommerce:error_rate_by_service
+        expr: |
+          (
+            sum(rate(http_requests_total{code=~"5.."}[5m])) by (service) /
+            sum(rate(http_requests_total[5m])) by (service)
+          ) * 100
+          
+      # Cart Abandonment Rate
+      - record: ecommerce:cart_abandonment_rate
+        expr: |
+          (
+            1 - (
+              sum(rate(order_created_total[5m])) /
+              sum(rate(cart_created_total[5m]))
+            )
+          ) * 100
+          
+      # Payment Success Rate
+      - record: ecommerce:payment_success_rate
+        expr: |
+          (
+            sum(rate(payment_completed_total[5m])) /
+            sum(rate(payment_initiated_total[5m]))
+          ) * 100
+          
+      # User Registration Rate
+      - record: ecommerce:user_registration_rate
+        expr: |
+          sum(rate(user_created_total[5m])) * 3600
+          
+      # Active Users (DAU approximation)
+      - record: ecommerce:daily_active_users
+        expr: |
+          count(
+            count by (user_id) (
+              increase(user_activity_total[24h])
+            )
+          )
+          
+      # Product Search Success Rate
+      - record: ecommerce:search_success_rate
+        expr: |
+          (
+            sum(rate(search_results_total{results > 0}[5m])) /
+            sum(rate(search_requests_total[5m]))
+          ) * 100
+          
+      # Inventory Turnover
+      - record: ecommerce:inventory_turnover
+        expr: |
+          sum(rate(product_sold_total[24h])) /
+          sum(product_inventory)
+          
+    - name: ecommerce.business.alerts
+      rules:
+      # Critical Business Alerts
+      - alert: OrderSuccessRateLow
+        expr: ecommerce:order_success_rate < 95
+        for: 5m
+        labels:
+          severity: critical
+          team: business
+        annotations:
+          summary: "Order success rate is below 95%"
+          description: "Order success rate is {{ $value }}%, which is below the SLO of 95%"
+          runbook_url: "https://runbooks.ecommerce.com/order-success-rate-low"
+          
+      - alert: CartConversionRateLow
+        expr: ecommerce:cart_conversion_rate < 10
+        for: 10m
+        labels:
+          severity: warning
+          team: business
+        annotations:
+          summary: "Cart conversion rate is unusually low"
+          description: "Cart conversion rate is {{ $value }}%, which may indicate issues with checkout flow"
+          
+      - alert: PaymentSuccessRateLow
+        expr: ecommerce:payment_success_rate < 98
+        for: 3m
+        labels:
+          severity: critical
+          team: payments
+        annotations:
+          summary: "Payment success rate is below threshold"
+          description: "Payment success rate is {{ $value }}%, indicating payment processing issues"
+          
+      - alert: ProductUnavailabilityHigh
+        expr: ecommerce:product_availability_rate < 85
+        for: 15m
+        labels:
+          severity: warning
+          team: inventory
+        annotations:
+          summary: "High number of products out of stock"
+          description: "Only {{ $value }}% of products are available, which may impact sales"
+          
+      - alert: APIResponseTimeTooHigh
+        expr: ecommerce:api_response_time_p95 > 2
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "API response time is too high"
+          description: "P95 response time is {{ $value }}s, above the 2s threshold"
+          
+      - alert: HighErrorRateByService
+        expr: ecommerce:error_rate_by_service > 5
+        for: 3m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "High error rate detected in {{ $labels.service }}"
+          description: "Error rate for {{ $labels.service }} is {{ $value }}%, above 5% threshold"
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ecommerce-business-metrics
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: prometheus
+spec:
+  groups:
+  - name: ecommerce.sli.slo
+    interval: 30s
+    rules:
+    # Service Level Indicators (SLIs)
+    - record: sli:order_service:availability
+      expr: |
+        (
+          sum(rate(http_requests_total{job="order-service", code!~"5.."}[5m])) /
+          sum(rate(http_requests_total{job="order-service"}[5m]))
+        )
+        
+    - record: sli:order_service:latency
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(http_request_duration_seconds_bucket{job="order-service"}[5m])) by (le)
+        )
+        
+    - record: sli:cart_service:availability
+      expr: |
+        (
+          sum(rate(http_requests_total{job="cart-service", code!~"5.."}[5m])) /
+          sum(rate(http_requests_total{job="cart-service"}[5m]))
+        )
+        
+    - record: sli:product_service:availability
+      expr: |
+        (
+          sum(rate(http_requests_total{job="product-service", code!~"5.."}[5m])) /
+          sum(rate(http_requests_total{job="product-service"}[5m]))
+        )
+        
+    # Service Level Objectives (SLOs) - Error Budget
+    - record: slo:order_service:error_budget
+      expr: |
+        1 - sli:order_service:availability
+        
+    - record: slo:cart_service:error_budget  
+      expr: |
+        1 - sli:cart_service:availability
+        
+    # Business KPIs
+    - record: kpi:revenue:hourly
+      expr: |
+        sum(increase(order_total_value[1h]))
+        
+    - record: kpi:orders:hourly
+      expr: |
+        sum(increase(order_created_total[1h]))
+        
+    - record: kpi:new_users:hourly
+      expr: |
+        sum(increase(user_created_total[1h]))
+        
+    - record: kpi:cart_additions:hourly
+      expr: |
+        sum(increase(cart_item_added_total[1h]))
+        
+  - name: ecommerce.slo.alerts
+    rules:
+    # SLO Violation Alerts
+    - alert: OrderServiceSLOViolation
+      expr: sli:order_service:availability < 0.995
+      for: 5m
+      labels:
+        severity: critical
+        slo: availability
+        service: order-service
+      annotations:
+        summary: "Order Service SLO violation - availability below 99.5%"
+        description: "Order service availability is {{ $value | humanizePercentage }}, violating SLO"
+        
+    - alert: OrderServiceLatencySLOViolation
+      expr: sli:order_service:latency > 0.5
+      for: 5m
+      labels:
+        severity: warning
+        slo: latency
+        service: order-service
+      annotations:
+        summary: "Order Service latency SLO violation - P95 above 500ms"
+        description: "Order service P95 latency is {{ $value }}s, violating SLO"
+        
+    - alert: ErrorBudgetExhausted
+      expr: slo:order_service:error_budget > 0.005
+      for: 10m
+      labels:
+        severity: critical
+        type: error-budget
+        service: order-service
+      annotations:
+        summary: "Error budget exhausted for Order Service"
+        description: "Error budget consumption is {{ $value | humanizePercentage }}, above 0.5% threshold"

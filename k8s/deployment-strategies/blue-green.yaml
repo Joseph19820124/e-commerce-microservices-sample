@@ -1,0 +1,298 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: cart-service-rollout
+  namespace: production
+spec:
+  replicas: 5
+  strategy:
+    blueGreen:
+      activeService: cart-service-active
+      previewService: cart-service-preview
+      autoPromotionEnabled: false
+      scaleDownDelaySeconds: 30
+      prePromotionAnalysis:
+        templates:
+        - templateName: success-rate
+        args:
+        - name: service-name
+          value: cart-service-preview
+      postPromotionAnalysis:
+        templates:
+        - templateName: success-rate
+        args:
+        - name: service-name
+          value: cart-service-active
+      previewReplicaCount: 2
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: cart-service
+  template:
+    metadata:
+      labels:
+        app: cart-service
+        version: blue
+    spec:
+      serviceAccountName: cart-service
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: cart-service
+        image: harbor.ecommerce.com/ecommerce/cart-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: JAVA_OPTS
+          value: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+        - name: SPRING_PROFILES_ACTIVE
+          value: "production"
+        envFrom:
+        - configMapRef:
+            name: cart-service-config
+        - secretRef:
+            name: cart-service-secret
+        resources:
+          requests:
+            memory: "768Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: logs
+          mountPath: /var/log
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: logs
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cart-service-active
+  namespace: production
+  labels:
+    app: cart-service
+    role: active
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: cart-service
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cart-service-preview
+  namespace: production
+  labels:
+    app: cart-service
+    role: preview
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: cart-service
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+  namespace: production
+spec:
+  args:
+  - name: service-name
+  metrics:
+  - name: success-rate
+    interval: 30s
+    count: 5
+    successCondition: result[0] >= 0.95
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          sum(rate(
+            http_requests_total{service="{{args.service-name}}", code!~"5.."}[2m]
+          )) /
+          sum(rate(
+            http_requests_total{service="{{args.service-name}}"}[2m]
+          ))
+  - name: avg-response-time
+    interval: 30s
+    count: 5
+    successCondition: result[0] <= 0.5
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          histogram_quantile(0.95,
+            sum(rate(
+              http_request_duration_seconds_bucket{service="{{args.service-name}}"}[2m]
+            )) by (le)
+          )
+  - name: error-rate
+    interval: 30s
+    count: 5
+    successCondition: result[0] <= 0.05
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          sum(rate(
+            http_requests_total{service="{{args.service-name}}", code=~"5.."}[2m]
+          )) /
+          sum(rate(
+            http_requests_total{service="{{args.service-name}}"}[2m]
+          ))
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: cart-service-vs
+  namespace: production
+spec:
+  hosts:
+  - api.ecommerce.com
+  gateways:
+  - istio-system/ecommerce-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /api/cart
+    route:
+    - destination:
+        host: cart-service-active.production.svc.cluster.local
+        port:
+          number: 80
+      weight: 100
+    fault:
+      delay:
+        percentage:
+          value: 0.001
+        fixedDelay: 5s
+    retries:
+      attempts: 3
+      perTryTimeout: 2s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+    timeout: 10s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: cart-service-dr
+  namespace: production
+spec:
+  host: cart-service-active.production.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 50
+        connectTimeout: 10s
+      http:
+        http1MaxPendingRequests: 50
+        http2MaxRequests: 50
+        maxRequestsPerConnection: 5
+        maxRetries: 2
+        consecutiveGatewayErrors: 2
+        idleTimeout: 30s
+    outlierDetection:
+      consecutiveGatewayErrors: 2
+      consecutive5xxErrors: 2
+      interval: 15s
+      baseEjectionTime: 15s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: blue-green-smoke-test
+  namespace: production
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: smoke-test
+        image: curlimages/curl:8.4.0
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Running smoke tests against preview service..."
+          
+          # Test health endpoint
+          if ! curl -f http://cart-service-preview.production.svc.cluster.local/actuator/health; then
+            echo "Health check failed"
+            exit 1
+          fi
+          
+          # Test API endpoints
+          if ! curl -f http://cart-service-preview.production.svc.cluster.local/api/health; then
+            echo "API health check failed"
+            exit 1
+          fi
+          
+          # Load test
+          for i in $(seq 1 100); do
+            curl -s http://cart-service-preview.production.svc.cluster.local/api/health > /dev/null
+            if [ $? -ne 0 ]; then
+              echo "Load test failed at iteration $i"
+              exit 1
+            fi
+          done
+          
+          echo "All smoke tests passed!"
+      activeDeadlineSeconds: 300
+  backoffLimit: 1

@@ -1,0 +1,543 @@
+stages:
+  - validate
+  - test
+  - security-scan
+  - build
+  - deploy-dev
+  - integration-test
+  - deploy-staging
+  - e2e-test
+  - deploy-production
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  REGISTRY: harbor.ecommerce.com
+  PROJECT_NAME: ecommerce
+  KUBECONFIG: /tmp/kubeconfig
+
+# Global rules
+.rules_mr: &rules_mr
+  - if: $CI_MERGE_REQUEST_ID
+
+.rules_main: &rules_main
+  - if: $CI_COMMIT_BRANCH == "main"
+
+.rules_release: &rules_release
+  - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/
+
+# Templates
+.docker_login: &docker_login
+  - echo $HARBOR_PASSWORD | docker login $REGISTRY -u $HARBOR_USERNAME --password-stdin
+
+.kubectl_setup: &kubectl_setup
+  - echo $KUBECONFIG_CONTENT | base64 -d > $KUBECONFIG
+  - kubectl config current-context
+
+# Validation Stage
+validate:code:
+  stage: validate
+  image: alpine:3.18
+  script:
+    - apk add --no-cache git
+    - |
+      echo "🔍 Validating code structure..."
+      
+      # Check if all required files exist
+      required_files=(
+        "README.md"
+        "ARCHITECTURE_BLUEPRINT.md"
+        ".gitignore"
+      )
+      
+      for file in "${required_files[@]}"; do
+        if [[ ! -f "$file" ]]; then
+          echo "❌ Required file $file is missing"
+          exit 1
+        fi
+      done
+      
+      # Check service directories
+      services=(
+        "cart-cna-microservice"
+        "products-cna-microservice"
+        "users-cna-microservice"
+        "store-ui"
+      )
+      
+      for service in "${services[@]}"; do
+        if [[ ! -d "$service" ]]; then
+          echo "❌ Service directory $service is missing"
+          exit 1
+        fi
+      done
+      
+      echo "✅ Code structure validation passed"
+  rules:
+    - <<: *rules_mr
+    - <<: *rules_main
+
+validate:terraform:
+  stage: validate
+  image: hashicorp/terraform:1.6
+  script:
+    - cd infra/terraform/environments/dev
+    - terraform init -backend=false
+    - terraform validate
+    - terraform fmt -check -recursive
+  rules:
+    - <<: *rules_mr
+    - <<: *rules_main
+
+validate:kubernetes:
+  stage: validate
+  image: alpine/k8s:1.28.2
+  script:
+    - |
+      echo "🔍 Validating Kubernetes manifests..."
+      
+      # Validate YAML syntax
+      find k8s/ -name "*.yaml" -exec kubeval {} \;
+      
+      # Check for required labels
+      required_labels=("app" "version")
+      
+      for file in $(find k8s/apps/ -name "*.yaml"); do
+        for label in "${required_labels[@]}"; do
+          if ! grep -q "^[[:space:]]*$label:" "$file"; then
+            echo "❌ Missing required label '$label' in $file"
+            exit 1
+          fi
+        done
+      done
+      
+      echo "✅ Kubernetes manifests validation passed"
+  rules:
+    - <<: *rules_mr
+    - <<: *rules_main
+
+# Test Stage
+test:unit:java:
+  stage: test
+  image: openjdk:17-jdk-alpine
+  script:
+    - cd cart-cna-microservice
+    - ./gradlew clean test jacocoTestReport
+    - echo "Coverage threshold: 80%"
+    - |
+      coverage=$(grep -oP 'Total.*?(\d+)%' build/reports/jacoco/test/html/index.html | tail -1 | grep -oP '\d+')
+      if [[ $coverage -lt 80 ]]; then
+        echo "❌ Code coverage $coverage% is below 80% threshold"
+        exit 1
+      fi
+      echo "✅ Code coverage: $coverage%"
+  artifacts:
+    reports:
+      junit: cart-cna-microservice/build/test-results/test/TEST-*.xml
+      coverage_report:
+        coverage_format: jacoco
+        path: cart-cna-microservice/build/reports/jacoco/test/jacocoTestReport.xml
+    paths:
+      - cart-cna-microservice/build/reports/
+  coverage: '/Total.*?(\d+)%/'
+  rules:
+    - <<: *rules_mr
+    - <<: *rules_main
+
+test:unit:nodejs:
+  stage: test
+  image: node:18-alpine
+  script:
+    - cd products-cna-microservice
+    - npm ci
+    - npm run test:coverage
+    - echo "Coverage threshold: 75%"
+  artifacts:
+    reports:
+      junit: products-cna-microservice/coverage/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: products-cna-microservice/coverage/cobertura-coverage.xml
+    paths:
+      - products-cna-microservice/coverage/
+  coverage: '/Lines\s*:\s*(\d+\.\d+)%/'
+  rules:
+    - <<: *rules_mr
+    - <<: *rules_main
+
+test:unit:python:
+  stage: test
+  image: python:3.11-alpine
+  script:
+    - cd users-cna-microservice
+    - pip install -r requirements.txt
+    - pip install pytest pytest-cov
+    - pytest --cov=. --cov-report=xml --cov-report=html --junit-xml=coverage/junit.xml
+    - echo "Coverage threshold: 75%"
+  artifacts:
+    reports:
+      junit: users-cna-microservice/coverage/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: users-cna-microservice/coverage.xml
+    paths:
+      - users-cna-microservice/htmlcov/
+  coverage: '/TOTAL.+?(\d+\.\d+)%/'
+  rules:
+    - <<: *rules_mr
+    - <<: *rules_main
+
+test:unit:frontend:
+  stage: test
+  image: node:18-alpine
+  script:
+    - cd store-ui
+    - npm ci
+    - npm run test:coverage -- --watchAll=false
+    - echo "Coverage threshold: 70%"
+  artifacts:
+    reports:
+      junit: store-ui/coverage/junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: store-ui/coverage/cobertura-coverage.xml
+    paths:
+      - store-ui/coverage/
+  coverage: '/Lines\s*:\s*(\d+\.\d+)%/'
+  rules:
+    - <<: *rules_mr
+    - <<: *rules_main
+
+# Security Scan Stage
+security:secrets:
+  stage: security-scan
+  image: alpine:3.18
+  script:
+    - apk add --no-cache git
+    - |
+      echo "🔍 Scanning for secrets..."
+      
+      # Install truffleHog
+      wget -O trufflehog.tar.gz https://github.com/trufflesecurity/trufflehog/releases/download/v3.63.2/trufflehog_3.63.2_linux_amd64.tar.gz
+      tar -xzf trufflehog.tar.gz
+      chmod +x trufflehog
+      
+      # Scan for secrets
+      ./trufflehog git file://. --only-verified --fail
+      
+      echo "✅ No secrets found"
+  rules:
+    - <<: *rules_mr
+    - <<: *rules_main
+
+security:sast:
+  stage: security-scan
+  image: returntocorp/semgrep:latest
+  script:
+    - |
+      echo "🔍 Running SAST scan..."
+      
+      # Run Semgrep with security rules
+      semgrep --config=auto --error --strict --timeout=60 .
+      
+      echo "✅ SAST scan completed"
+  artifacts:
+    reports:
+      sast: semgrep-results.json
+  rules:
+    - <<: *rules_mr
+    - <<: *rules_main
+
+security:dependency:
+  stage: security-scan
+  image: alpine:3.18
+  script:
+    - apk add --no-cache npm python3 py3-pip openjdk17-jre
+    - |
+      echo "🔍 Scanning dependencies for vulnerabilities..."
+      
+      # Scan Node.js dependencies
+      for service in products-cna-microservice store-ui; do
+        if [[ -f "$service/package.json" ]]; then
+          cd "$service"
+          npm audit --audit-level=high
+          cd ..
+        fi
+      done
+      
+      # Scan Python dependencies
+      if [[ -f "users-cna-microservice/requirements.txt" ]]; then
+        pip install safety
+        safety check -r users-cna-microservice/requirements.txt
+      fi
+      
+      # Scan Java dependencies with OWASP Dependency Check
+      cd cart-cna-microservice
+      ./gradlew dependencyCheckAnalyze
+      cd ..
+      
+      echo "✅ Dependency scan completed"
+  artifacts:
+    paths:
+      - "*/dependency-check-report.html"
+    expire_in: 1 week
+  rules:
+    - <<: *rules_mr
+    - <<: *rules_main
+
+# Build Stage
+build:cart-service:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    IMAGE_TAG: $CI_COMMIT_SHA
+  script:
+    - *docker_login
+    - |
+      echo "🔨 Building cart-service..."
+      
+      cd cart-cna-microservice
+      
+      # Build application
+      docker build -t $REGISTRY/$PROJECT_NAME/cart-service:$IMAGE_TAG .
+      docker build -t $REGISTRY/$PROJECT_NAME/cart-service:latest .
+      
+      # Push images
+      docker push $REGISTRY/$PROJECT_NAME/cart-service:$IMAGE_TAG
+      docker push $REGISTRY/$PROJECT_NAME/cart-service:latest
+      
+      # Scan image with Trivy
+      docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+        aquasec/trivy:latest image --exit-code 1 --severity HIGH,CRITICAL \
+        $REGISTRY/$PROJECT_NAME/cart-service:$IMAGE_TAG
+      
+      echo "✅ Cart service build completed"
+  rules:
+    - <<: *rules_main
+
+build:product-service:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    IMAGE_TAG: $CI_COMMIT_SHA
+  script:
+    - *docker_login
+    - |
+      echo "🔨 Building product-service..."
+      
+      cd products-cna-microservice
+      
+      docker build -t $REGISTRY/$PROJECT_NAME/product-service:$IMAGE_TAG .
+      docker build -t $REGISTRY/$PROJECT_NAME/product-service:latest .
+      
+      docker push $REGISTRY/$PROJECT_NAME/product-service:$IMAGE_TAG
+      docker push $REGISTRY/$PROJECT_NAME/product-service:latest
+      
+      docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+        aquasec/trivy:latest image --exit-code 1 --severity HIGH,CRITICAL \
+        $REGISTRY/$PROJECT_NAME/product-service:$IMAGE_TAG
+      
+      echo "✅ Product service build completed"
+  rules:
+    - <<: *rules_main
+
+build:user-service:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    IMAGE_TAG: $CI_COMMIT_SHA
+  script:
+    - *docker_login
+    - |
+      echo "🔨 Building user-service..."
+      
+      cd users-cna-microservice
+      
+      docker build -t $REGISTRY/$PROJECT_NAME/user-service:$IMAGE_TAG .
+      docker build -t $REGISTRY/$PROJECT_NAME/user-service:latest .
+      
+      docker push $REGISTRY/$PROJECT_NAME/user-service:$IMAGE_TAG
+      docker push $REGISTRY/$PROJECT_NAME/user-service:latest
+      
+      docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+        aquasec/trivy:latest image --exit-code 1 --severity HIGH,CRITICAL \
+        $REGISTRY/$PROJECT_NAME/user-service:$IMAGE_TAG
+      
+      echo "✅ User service build completed"
+  rules:
+    - <<: *rules_main
+
+build:frontend:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    IMAGE_TAG: $CI_COMMIT_SHA
+  script:
+    - *docker_login
+    - |
+      echo "🔨 Building frontend..."
+      
+      cd store-ui
+      
+      docker build -t $REGISTRY/$PROJECT_NAME/store-ui:$IMAGE_TAG .
+      docker build -t $REGISTRY/$PROJECT_NAME/store-ui:latest .
+      
+      docker push $REGISTRY/$PROJECT_NAME/store-ui:$IMAGE_TAG
+      docker push $REGISTRY/$PROJECT_NAME/store-ui:latest
+      
+      docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+        aquasec/trivy:latest image --exit-code 1 --severity HIGH,CRITICAL \
+        $REGISTRY/$PROJECT_NAME/store-ui:$IMAGE_TAG
+      
+      echo "✅ Frontend build completed"
+  rules:
+    - <<: *rules_main
+
+# Deploy Dev Stage
+deploy:dev:
+  stage: deploy-dev
+  image: alpine/k8s:1.28.2
+  environment:
+    name: development
+    url: https://dev.ecommerce.com
+  script:
+    - *kubectl_setup
+    - |
+      echo "🚀 Deploying to development environment..."
+      
+      # Update image tags in deployment files
+      export IMAGE_TAG=$CI_COMMIT_SHA
+      
+      # Apply Kustomize overlays for dev
+      kubectl apply -k k8s/apps/overlays/dev/
+      
+      # Wait for deployments to be ready
+      kubectl rollout status deployment/cart-service -n default --timeout=600s
+      kubectl rollout status deployment/product-service -n default --timeout=600s
+      kubectl rollout status deployment/user-service -n default --timeout=600s
+      kubectl rollout status deployment/store-ui -n default --timeout=600s
+      
+      echo "✅ Development deployment completed"
+  rules:
+    - <<: *rules_main
+
+# Integration Tests
+integration:test:
+  stage: integration-test
+  image: postman/newman:5-alpine
+  script:
+    - |
+      echo "🧪 Running integration tests..."
+      
+      # Wait for services to be fully ready
+      sleep 30
+      
+      # Run Postman/Newman tests
+      newman run tests/integration/ecommerce-api-tests.json \
+        -e tests/integration/dev-environment.json \
+        --reporters cli,junit \
+        --reporter-junit-export integration-test-results.xml
+      
+      echo "✅ Integration tests completed"
+  artifacts:
+    reports:
+      junit: integration-test-results.xml
+    paths:
+      - integration-test-results.xml
+    expire_in: 1 week
+  rules:
+    - <<: *rules_main
+
+# Deploy Staging
+deploy:staging:
+  stage: deploy-staging
+  image: alpine/k8s:1.28.2
+  environment:
+    name: staging
+    url: https://staging.ecommerce.com
+  script:
+    - *kubectl_setup
+    - |
+      echo "🚀 Deploying to staging environment..."
+      
+      export IMAGE_TAG=$CI_COMMIT_SHA
+      
+      # Apply staging overlays
+      kubectl apply -k k8s/apps/overlays/staging/
+      
+      # Wait for deployments
+      kubectl rollout status deployment/cart-service -n staging --timeout=600s
+      kubectl rollout status deployment/product-service -n staging --timeout=600s
+      kubectl rollout status deployment/user-service -n staging --timeout=600s
+      kubectl rollout status deployment/store-ui -n staging --timeout=600s
+      
+      echo "✅ Staging deployment completed"
+  when: manual
+  allow_failure: false
+  rules:
+    - <<: *rules_main
+
+# E2E Tests
+e2e:test:
+  stage: e2e-test
+  image: mcr.microsoft.com/playwright:v1.40.0-focal
+  script:
+    - |
+      echo "🎭 Running E2E tests with Playwright..."
+      
+      cd tests/e2e
+      npm ci
+      
+      # Run E2E tests against staging
+      npx playwright test --config=playwright.staging.config.ts
+      
+      echo "✅ E2E tests completed"
+  artifacts:
+    when: always
+    paths:
+      - tests/e2e/test-results/
+      - tests/e2e/playwright-report/
+    expire_in: 1 week
+  rules:
+    - <<: *rules_main
+
+# Deploy Production
+deploy:production:
+  stage: deploy-production
+  image: alpine/k8s:1.28.2
+  environment:
+    name: production
+    url: https://ecommerce.com
+  script:
+    - *kubectl_setup
+    - |
+      echo "🚀 Deploying to production environment..."
+      
+      export IMAGE_TAG=$CI_COMMIT_SHA
+      
+      # Blue-Green deployment strategy
+      kubectl apply -k k8s/apps/overlays/production/
+      
+      # Wait for new version to be ready
+      kubectl rollout status deployment/cart-service -n production --timeout=600s
+      kubectl rollout status deployment/product-service -n production --timeout=600s
+      kubectl rollout status deployment/user-service -n production --timeout=600s
+      kubectl rollout status deployment/store-ui -n production --timeout=600s
+      
+      # Run smoke tests
+      sleep 60
+      curl -f https://ecommerce.com/health || exit 1
+      
+      echo "✅ Production deployment completed"
+  when: manual
+  allow_failure: false
+  rules:
+    - <<: *rules_release

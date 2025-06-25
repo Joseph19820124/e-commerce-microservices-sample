@@ -1,0 +1,305 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: performance-analysis-rules
+  namespace: monitoring
+data:
+  performance-rules.yaml: |
+    groups:
+    - name: performance.analysis
+      interval: 15s
+      rules:
+      # Response Time Analysis
+      - record: perf:response_time:p50
+        expr: |
+          histogram_quantile(0.50,
+            sum(rate(http_request_duration_seconds_bucket{job=~".*-service"}[2m])) by (le, service)
+          )
+      
+      - record: perf:response_time:p95  
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job=~".*-service"}[2m])) by (le, service)
+          )
+          
+      - record: perf:response_time:p99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job=~".*-service"}[2m])) by (le, service)
+          )
+      
+      # Database Performance
+      - record: perf:db_connection_usage
+        expr: |
+          (
+            sum(db_connections_active) by (service) /
+            sum(db_connections_max) by (service)
+          ) * 100
+          
+      - record: perf:db_query_duration:p95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(db_query_duration_seconds_bucket[2m])) by (le, service, operation)
+          )
+          
+      - record: perf:db_slow_queries_rate
+        expr: |
+          sum(rate(db_slow_queries_total[2m])) by (service)
+      
+      # Cache Performance  
+      - record: perf:cache_hit_rate
+        expr: |
+          (
+            sum(rate(cache_hits_total[2m])) by (service) /
+            (
+              sum(rate(cache_hits_total[2m])) by (service) +
+              sum(rate(cache_misses_total[2m])) by (service)
+            )
+          ) * 100
+          
+      - record: perf:cache_response_time:p95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(cache_request_duration_seconds_bucket[2m])) by (le, service)
+          )
+      
+      # Resource Utilization
+      - record: perf:cpu_utilization
+        expr: |
+          (
+            sum(rate(container_cpu_usage_seconds_total{namespace="default", pod=~".*-service.*"}[2m])) by (pod) /
+            sum(container_spec_cpu_quota{namespace="default", pod=~".*-service.*"} / container_spec_cpu_period{namespace="default", pod=~".*-service.*"}) by (pod)
+          ) * 100
+          
+      - record: perf:memory_utilization  
+        expr: |
+          (
+            sum(container_memory_usage_bytes{namespace="default", pod=~".*-service.*"}) by (pod) /
+            sum(container_spec_memory_limit_bytes{namespace="default", pod=~".*-service.*"}) by (pod)
+          ) * 100
+          
+      - record: perf:memory_pressure
+        expr: |
+          rate(container_memory_cache{namespace="default", pod=~".*-service.*"}[2m]) +
+          rate(container_memory_swap{namespace="default", pod=~".*-service.*"}[2m])
+      
+      # Network Performance
+      - record: perf:network_throughput:rx
+        expr: |
+          sum(rate(container_network_receive_bytes_total{namespace="default", pod=~".*-service.*"}[2m])) by (pod)
+          
+      - record: perf:network_throughput:tx
+        expr: |
+          sum(rate(container_network_transmit_bytes_total{namespace="default", pod=~".*-service.*"}[2m])) by (pod)
+          
+      - record: perf:network_errors
+        expr: |
+          sum(rate(container_network_receive_errors_total{namespace="default", pod=~".*-service.*"}[2m])) by (pod) +
+          sum(rate(container_network_transmit_errors_total{namespace="default", pod=~".*-service.*"}[2m])) by (pod)
+      
+      # Service Dependencies Performance
+      - record: perf:external_service_latency:p95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_client_request_duration_seconds_bucket[2m])) by (le, service, target_service)
+          )
+          
+      - record: perf:external_service_error_rate
+        expr: |
+          (
+            sum(rate(http_client_requests_total{code=~"5.."}[2m])) by (service, target_service) /
+            sum(rate(http_client_requests_total[2m])) by (service, target_service)
+          ) * 100
+      
+      # JVM Performance (for Java services)
+      - record: perf:jvm_gc_duration:p95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(jvm_gc_collection_seconds_bucket[2m])) by (le, service, gc)
+          )
+          
+      - record: perf:jvm_heap_usage
+        expr: |
+          (
+            sum(jvm_memory_used_bytes{area="heap"}) by (service) /
+            sum(jvm_memory_max_bytes{area="heap"}) by (service)
+          ) * 100
+          
+      - record: perf:jvm_thread_count
+        expr: |
+          sum(jvm_threads_current) by (service)
+      
+      # Queue Performance
+      - record: perf:queue_depth
+        expr: |
+          sum(queue_depth) by (service, queue_name)
+          
+      - record: perf:queue_processing_time:p95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(queue_message_processing_duration_seconds_bucket[2m])) by (le, service, queue_name)
+          )
+          
+      - record: perf:queue_error_rate
+        expr: |
+          (
+            sum(rate(queue_messages_failed_total[2m])) by (service, queue_name) /
+            sum(rate(queue_messages_processed_total[2m])) by (service, queue_name)
+          ) * 100
+    
+    - name: performance.alerts
+      rules:
+      # Critical Performance Alerts
+      - alert: HighResponseTimeP95
+        expr: perf:response_time:p95 > 2
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High P95 response time for {{ $labels.service }}"
+          description: "P95 response time is {{ $value }}s, above 2s threshold for service {{ $labels.service }}"
+          
+      - alert: CriticalResponseTimeP99
+        expr: perf:response_time:p99 > 5
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Critical P99 response time for {{ $labels.service }}"
+          description: "P99 response time is {{ $value }}s, above 5s threshold for service {{ $labels.service }}"
+          
+      - alert: HighCPUUtilization
+        expr: perf:cpu_utilization > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High CPU utilization for {{ $labels.pod }}"
+          description: "CPU utilization is {{ $value }}% for pod {{ $labels.pod }}"
+          
+      - alert: HighMemoryUtilization
+        expr: perf:memory_utilization > 85
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High memory utilization for {{ $labels.pod }}"
+          description: "Memory utilization is {{ $value }}% for pod {{ $labels.pod }}"
+          
+      - alert: LowCacheHitRate
+        expr: perf:cache_hit_rate < 80
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Low cache hit rate for {{ $labels.service }}"
+          description: "Cache hit rate is {{ $value }}% for service {{ $labels.service }}, below 80% threshold"
+          
+      - alert: DatabaseConnectionPoolHigh
+        expr: perf:db_connection_usage > 90
+        for: 3m
+        labels:
+          severity: critical
+          team: database
+        annotations:
+          summary: "Database connection pool utilization high for {{ $labels.service }}"
+          description: "Connection pool usage is {{ $value }}% for service {{ $labels.service }}"
+          
+      - alert: SlowDatabaseQueries
+        expr: perf:db_query_duration:p95 > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: database
+        annotations:
+          summary: "Slow database queries detected for {{ $labels.service }}"
+          description: "P95 query duration is {{ $value }}s for service {{ $labels.service }}"
+          
+      - alert: HighJVMGCTime
+        expr: perf:jvm_gc_duration:p95 > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: jvm
+        annotations:
+          summary: "High JVM GC time for {{ $labels.service }}"
+          description: "P95 GC duration is {{ $value }}s for service {{ $labels.service }}"
+          
+      - alert: QueueDepthHigh  
+        expr: perf:queue_depth > 1000
+        for: 5m
+        labels:
+          severity: warning
+          team: messaging
+        annotations:
+          summary: "High queue depth for {{ $labels.queue_name }}"
+          description: "Queue depth is {{ $value }} for queue {{ $labels.queue_name }}"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: performance-dashboard-config
+  namespace: monitoring
+data:
+  performance-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "Performance Analysis Dashboard",
+        "tags": ["performance", "analysis", "bottlenecks"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Response Time Percentiles",
+            "type": "timeseries",
+            "targets": [
+              {"expr": "perf:response_time:p50", "legendFormat": "P50 - {{ service }}"},
+              {"expr": "perf:response_time:p95", "legendFormat": "P95 - {{ service }}"},
+              {"expr": "perf:response_time:p99", "legendFormat": "P99 - {{ service }}"}
+            ],
+            "fieldConfig": {"defaults": {"unit": "s"}},
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Resource Utilization",
+            "type": "timeseries",
+            "targets": [
+              {"expr": "perf:cpu_utilization", "legendFormat": "CPU - {{ pod }}"},
+              {"expr": "perf:memory_utilization", "legendFormat": "Memory - {{ pod }}"}
+            ],
+            "fieldConfig": {"defaults": {"unit": "percent"}},
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Database Performance",
+            "type": "timeseries",
+            "targets": [
+              {"expr": "perf:db_query_duration:p95", "legendFormat": "Query P95 - {{ service }}"},
+              {"expr": "perf:db_connection_usage", "legendFormat": "Connection Usage - {{ service }}"}
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+          },
+          {
+            "id": 4,
+            "title": "Cache Performance",
+            "type": "timeseries",
+            "targets": [
+              {"expr": "perf:cache_hit_rate", "legendFormat": "Hit Rate - {{ service }}"},
+              {"expr": "perf:cache_response_time:p95", "legendFormat": "Response Time P95 - {{ service }}"}
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+          }
+        ],
+        "time": {"from": "now-1h", "to": "now"},
+        "refresh": "10s"
+      }
+    }

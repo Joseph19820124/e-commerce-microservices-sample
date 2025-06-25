@@ -1,0 +1,266 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: tracing
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      jaeger:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:14250
+          thrift_http:
+            endpoint: 0.0.0.0:14268
+          thrift_compact:
+            endpoint: 0.0.0.0:6831
+          thrift_binary:
+            endpoint: 0.0.0.0:6832
+      zipkin:
+        endpoint: 0.0.0.0:9411
+      prometheus:
+        config:
+          scrape_configs:
+          - job_name: 'otel-collector'
+            scrape_interval: 10s
+            static_configs:
+            - targets: ['0.0.0.0:8888']
+    
+    processors:
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+      memory_limiter:
+        limit_mib: 400
+        spike_limit_mib: 100
+        check_interval: 5s
+      resource:
+        attributes:
+        - key: cluster.name
+          value: ecommerce-cluster
+          action: upsert
+        - key: deployment.environment
+          from_attribute: environment
+          action: insert
+      attributes:
+        actions:
+        - key: http.user_agent
+          action: delete
+        - key: http.request.header.authorization
+          action: delete
+        - key: sensitive_data
+          action: delete
+      span:
+        name:
+          to_attributes:
+            rules:
+            - ^\/api\/(?P<service_name>\w+)\/.*
+      probabilistic_sampler:
+        sampling_percentage: 10
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 100
+        expected_new_traces_per_sec: 10
+        policies:
+        - name: error_policy
+          type: status_code
+          status_code:
+            status_codes: [ERROR]
+        - name: latency_policy
+          type: latency
+          latency:
+            threshold_ms: 5000
+        - name: probabilistic_policy
+          type: probabilistic
+          probabilistic:
+            sampling_percentage: 1
+    
+    exporters:
+      jaeger:
+        endpoint: jaeger-collector.tracing.svc.cluster.local:14250
+        tls:
+          insecure: true
+      zipkin:
+        endpoint: http://jaeger-collector.tracing.svc.cluster.local:9411/api/v2/spans
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+        const_labels:
+          cluster: ecommerce
+      logging:
+        loglevel: debug
+      elasticsearch/traces:
+        endpoints: 
+        - https://elasticsearch-es-http.logging.svc.cluster.local:9200
+        index: traces-%Y.%m.%d
+        user: elastic
+        password: ${ELASTIC_PASSWORD}
+        tls:
+          insecure_skip_verify: true
+    
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      pprof:
+        endpoint: 0.0.0.0:1777
+      zpages:
+        endpoint: 0.0.0.0:55679
+    
+    service:
+      extensions: [health_check, pprof, zpages]
+      pipelines:
+        traces:
+          receivers: [otlp, jaeger, zipkin]
+          processors: [memory_limiter, resource, attributes, span, batch, tail_sampling]
+          exporters: [jaeger, elasticsearch/traces, logging]
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheus, logging]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [logging]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: tracing
+  labels:
+    app: otel-collector
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8889"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:0.88.0
+        args:
+        - --config=/conf/otel-collector-config.yaml
+        env:
+        - name: ELASTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: elasticsearch-es-elastic-user
+              key: elastic
+        ports:
+        - containerPort: 4317   # OTLP gRPC receiver
+          name: otlp-grpc
+        - containerPort: 4318   # OTLP HTTP receiver  
+          name: otlp-http
+        - containerPort: 14250  # Jaeger gRPC
+          name: jaeger-grpc
+        - containerPort: 14268  # Jaeger HTTP
+          name: jaeger-http
+        - containerPort: 6831   # Jaeger compact
+          name: jaeger-compact
+          protocol: UDP
+        - containerPort: 6832   # Jaeger binary
+          name: jaeger-binary
+          protocol: UDP
+        - containerPort: 9411   # Zipkin
+          name: zipkin
+        - containerPort: 8889   # Prometheus metrics
+          name: metrics
+        - containerPort: 13133  # Health check
+          name: health
+        volumeMounts:
+        - name: config
+          mountPath: /conf
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 13133
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 13133
+      volumes:
+      - name: config
+        configMap:
+          name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: tracing
+  labels:
+    app: otel-collector
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4317
+    targetPort: 4317
+    protocol: TCP
+    name: otlp-grpc
+  - port: 4318
+    targetPort: 4318
+    protocol: TCP
+    name: otlp-http
+  - port: 14250
+    targetPort: 14250
+    protocol: TCP
+    name: jaeger-grpc
+  - port: 14268
+    targetPort: 14268
+    protocol: TCP
+    name: jaeger-http
+  - port: 6831
+    targetPort: 6831
+    protocol: UDP
+    name: jaeger-compact
+  - port: 6832
+    targetPort: 6832
+    protocol: UDP
+    name: jaeger-binary
+  - port: 9411
+    targetPort: 9411
+    protocol: TCP
+    name: zipkin
+  - port: 8889
+    targetPort: 8889
+    protocol: TCP
+    name: metrics
+  selector:
+    app: otel-collector
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: otel-collector
+  namespace: tracing
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    matchLabels:
+      app: otel-collector
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics

@@ -1,0 +1,80 @@
+apiVersion: jaegertracing.io/v1
+kind: Jaeger
+metadata:
+  name: jaeger
+  namespace: tracing
+spec:
+  strategy: production
+  storage:
+    type: elasticsearch
+    elasticsearch:
+      nodeCount: 3
+      redundancyPolicy: SingleRedundancy
+      resources:
+        requests:
+          memory: "2Gi"
+          cpu: "500m"
+        limits:
+          memory: "4Gi"
+          cpu: "1000m"
+      storage:
+        storageClassName: gp3
+        size: 100Gi
+  collector:
+    maxReplicas: 5
+    resources:
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+  query:
+    replicas: 2
+    resources:
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+  agent:
+    strategy: DaemonSet
+    resources:
+      limits:
+        cpu: "200m"
+        memory: "128Mi"
+      requests:
+        cpu: "100m"
+        memory: "64Mi"
+  ingress:
+    enabled: true
+    annotations:
+      kubernetes.io/ingress.class: istio
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - jaeger.ecommerce.com
+    tls:
+      - secretName: jaeger-tls
+        hosts:
+          - jaeger.ecommerce.com
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: jaeger-vs
+  namespace: tracing
+spec:
+  hosts:
+  - jaeger.ecommerce.com
+  gateways:
+  - istio-system/ecommerce-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: jaeger-query.tracing.svc.cluster.local
+        port:
+          number: 16686

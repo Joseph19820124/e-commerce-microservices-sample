@@ -1,0 +1,561 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: performance-optimization-config
+  namespace: production
+data:
+  # JVM Performance Tuning
+  jvm-tuning.properties: |
+    # Heap Configuration
+    -Xms2g
+    -Xmx4g
+    -XX:NewRatio=1
+    -XX:SurvivorRatio=8
+    
+    # GC Configuration (G1GC)
+    -XX:+UseG1GC
+    -XX:MaxGCPauseMillis=200
+    -XX:G1HeapRegionSize=16m
+    -XX:G1NewSizePercent=30
+    -XX:G1MaxNewSizePercent=40
+    -XX:G1MixedGCCountTarget=8
+    -XX:G1MixedGCLiveThresholdPercent=85
+    
+    # GC Logging
+    -XX:+PrintGC
+    -XX:+PrintGCDetails
+    -XX:+PrintGCTimeStamps
+    -XX:+UseGCLogFileRotation
+    -XX:NumberOfGCLogFiles=5
+    -XX:GCLogFileSize=10M
+    -Xloggc:/var/log/gc.log
+    
+    # Performance Optimization
+    -XX:+AggressiveOpts
+    -XX:+UseFastAccessorMethods
+    -XX:+UseCompressedOops
+    -XX:+OptimizeStringConcat
+    
+    # Memory Management
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:HeapDumpPath=/var/log/heapdump.hprof
+    -XX:+ExitOnOutOfMemoryError
+
+  # Database Connection Pool Optimization
+  db-pool-config.properties: |
+    # HikariCP Configuration
+    spring.datasource.hikari.maximum-pool-size=50
+    spring.datasource.hikari.minimum-idle=10
+    spring.datasource.hikari.idle-timeout=300000
+    spring.datasource.hikari.max-lifetime=1800000
+    spring.datasource.hikari.connection-timeout=20000
+    spring.datasource.hikari.validation-timeout=5000
+    spring.datasource.hikari.leak-detection-threshold=60000
+    
+    # Connection Pool Monitoring
+    spring.datasource.hikari.register-mbeans=true
+    management.metrics.export.prometheus.enabled=true
+    
+    # Query Optimization
+    spring.jpa.properties.hibernate.jdbc.batch_size=50
+    spring.jpa.properties.hibernate.order_inserts=true
+    spring.jpa.properties.hibernate.order_updates=true
+    spring.jpa.properties.hibernate.jdbc.batch_versioned_data=true
+    
+    # Cache Configuration
+    spring.jpa.properties.hibernate.cache.use_second_level_cache=true
+    spring.jpa.properties.hibernate.cache.use_query_cache=true
+    spring.jpa.properties.hibernate.cache.region.factory_class=org.hibernate.cache.jcache.JCacheRegionFactory
+
+  # Redis Cache Optimization
+  redis-config.properties: |
+    # Connection Pool
+    spring.redis.jedis.pool.max-active=200
+    spring.redis.jedis.pool.max-idle=50
+    spring.redis.jedis.pool.min-idle=10
+    spring.redis.jedis.pool.max-wait=2000ms
+    
+    # Timeouts
+    spring.redis.timeout=2000ms
+    spring.redis.connect-timeout=1000ms
+    
+    # Cache TTL Configuration
+    cache.default-ttl=3600
+    cache.user-session-ttl=1800
+    cache.product-catalog-ttl=7200
+    cache.cart-ttl=600
+    
+    # Compression
+    spring.redis.enable-compression=true
+    spring.redis.compression-type=gzip
+
+  # Application Performance Settings
+  app-performance.properties: |
+    # Async Processing
+    spring.task.execution.pool.core-size=10
+    spring.task.execution.pool.max-size=50
+    spring.task.execution.pool.queue-capacity=100
+    spring.task.execution.pool.keep-alive=60s
+    
+    # Web Configuration
+    server.tomcat.threads.max=200
+    server.tomcat.threads.min-spare=10
+    server.tomcat.max-connections=8192
+    server.tomcat.accept-count=100
+    server.tomcat.connection-timeout=20000
+    
+    # HTTP Client Optimization
+    http.client.connection-pool-size=50
+    http.client.connection-timeout=5000
+    http.client.read-timeout=10000
+    http.client.keep-alive-duration=30000
+    
+    # Circuit Breaker
+    resilience4j.circuitbreaker.configs.default.sliding-window-size=100
+    resilience4j.circuitbreaker.configs.default.minimum-number-of-calls=10
+    resilience4j.circuitbreaker.configs.default.failure-rate-threshold=50
+    resilience4j.circuitbreaker.configs.default.wait-duration-in-open-state=30s
+    
+    # Retry Configuration
+    resilience4j.retry.configs.default.max-attempts=3
+    resilience4j.retry.configs.default.wait-duration=1s
+    resilience4j.retry.configs.default.exponential-backoff-multiplier=2
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cart-service-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cart-service
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "100"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+      selectPolicy: Max
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: product-service-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: product-service
+  minReplicas: 2
+  maxReplicas: 15
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: user-service-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: user-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: database-optimization-scripts
+  namespace: production
+data:
+  optimize-indexes.sql: |
+    -- Performance Optimization Indexes
+    
+    -- Cart Service Indexes
+    CREATE INDEX IF NOT EXISTS idx_cart_user_id_created_at ON carts(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_cart_items_cart_id_product_id ON cart_items(cart_id, product_id);
+    CREATE INDEX IF NOT EXISTS idx_cart_items_product_id ON cart_items(product_id);
+    
+    -- Product Service Indexes  
+    CREATE INDEX IF NOT EXISTS idx_products_category_price ON products(category_id, price);
+    CREATE INDEX IF NOT EXISTS idx_products_name_gin ON products USING gin(to_tsvector('english', name));
+    CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_product_inventory_product_id ON product_inventory(product_id);
+    
+    -- User Service Indexes
+    CREATE INDEX IF NOT EXISTS idx_users_email_status ON users(email, status) WHERE status = 'ACTIVE';
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id_expires_at ON user_sessions(user_id, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at) WHERE expires_at > NOW();
+    
+    -- Order Service Indexes (if exists)
+    CREATE INDEX IF NOT EXISTS idx_orders_user_id_status_created_at ON orders(user_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
+    CREATE INDEX IF NOT EXISTS idx_order_items_product_id ON order_items(product_id);
+
+  optimize-queries.sql: |
+    -- Database Configuration Optimization
+    
+    -- Connection and Memory Settings
+    ALTER SYSTEM SET shared_buffers = '256MB';
+    ALTER SYSTEM SET effective_cache_size = '1GB';
+    ALTER SYSTEM SET work_mem = '16MB';
+    ALTER SYSTEM SET maintenance_work_mem = '64MB';
+    
+    -- Query Optimization
+    ALTER SYSTEM SET random_page_cost = 1.1;
+    ALTER SYSTEM SET effective_io_concurrency = 200;
+    
+    -- WAL Configuration
+    ALTER SYSTEM SET wal_buffers = '16MB';
+    ALTER SYSTEM SET checkpoint_completion_target = 0.9;
+    ALTER SYSTEM SET max_wal_size = '1GB';
+    ALTER SYSTEM SET min_wal_size = '80MB';
+    
+    -- Logging for Performance Analysis
+    ALTER SYSTEM SET log_min_duration_statement = 1000;
+    ALTER SYSTEM SET log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h ';
+    ALTER SYSTEM SET log_checkpoints = on;
+    ALTER SYSTEM SET log_connections = on;
+    ALTER SYSTEM SET log_disconnections = on;
+    ALTER SYSTEM SET log_lock_waits = on;
+    ALTER SYSTEM SET log_temp_files = 0;
+    
+    -- Statistics Collection
+    ALTER SYSTEM SET track_activities = on;
+    ALTER SYSTEM SET track_counts = on;
+    ALTER SYSTEM SET track_io_timing = on;
+    ALTER SYSTEM SET track_functions = 'all';
+    
+    SELECT pg_reload_conf();
+
+  maintenance-tasks.sql: |
+    -- Regular Maintenance Tasks
+    
+    -- Update Table Statistics
+    ANALYZE;
+    
+    -- Vacuum and Reindex for High-Traffic Tables
+    VACUUM ANALYZE carts;
+    VACUUM ANALYZE cart_items;
+    VACUUM ANALYZE products;
+    VACUUM ANALYZE users;
+    VACUUM ANALYZE user_sessions;
+    
+    -- Clean up old sessions (older than 7 days)
+    DELETE FROM user_sessions WHERE expires_at < NOW() - INTERVAL '7 days';
+    
+    -- Clean up old audit logs (older than 30 days)
+    DELETE FROM audit_logs WHERE created_at < NOW() - INTERVAL '30 days';
+    
+    -- Update index statistics
+    REINDEX TABLE carts;
+    REINDEX TABLE cart_items;
+    REINDEX TABLE products;
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-maintenance
+  namespace: production
+spec:
+  schedule: "0 2 * * 0"  # Every Sunday at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: db-maintenance
+            image: postgres:15-alpine
+            env:
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: host
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: PGDATABASE
+              value: "ecommerce"
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting database maintenance..."
+              
+              # Run maintenance queries
+              psql -c "$(cat <<'EOF'
+              -- Update Table Statistics
+              ANALYZE;
+              
+              -- Vacuum High-Traffic Tables
+              VACUUM ANALYZE carts;
+              VACUUM ANALYZE cart_items;
+              VACUUM ANALYZE products;
+              VACUUM ANALYZE users;
+              VACUUM ANALYZE user_sessions;
+              
+              -- Clean up old sessions
+              DELETE FROM user_sessions WHERE expires_at < NOW() - INTERVAL '7 days';
+              
+              -- Clean up old audit logs
+              DELETE FROM audit_logs WHERE created_at < NOW() - INTERVAL '30 days';
+              
+              SELECT 'Database maintenance completed' as status;
+              EOF
+              )"
+              
+              echo "Database maintenance completed successfully"
+            volumeMounts:
+            - name: maintenance-scripts
+              mountPath: /scripts
+          volumes:
+          - name: maintenance-scripts
+            configMap:
+              name: database-optimization-scripts
+          restartPolicy: OnFailure
+      backoffLimit: 3
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: performance-benchmarking
+  namespace: production
+data:
+  benchmark-config.yaml: |
+    benchmarks:
+      - name: "api-load-test"
+        description: "Load test for API endpoints"
+        tool: "k6"
+        script: |
+          import http from 'k6/http';
+          import { check, sleep } from 'k6';
+          
+          export let options = {
+            stages: [
+              { duration: '2m', target: 100 },
+              { duration: '5m', target: 100 },
+              { duration: '2m', target: 200 },
+              { duration: '5m', target: 200 },
+              { duration: '2m', target: 300 },
+              { duration: '5m', target: 300 },
+              { duration: '2m', target: 0 },
+            ],
+            thresholds: {
+              http_req_duration: ['p(95)<2000'],
+              http_req_failed: ['rate<0.1'],
+            },
+          };
+          
+          export default function() {
+            let responses = http.batch([
+              ['GET', 'https://api.ecommerce.com/api/products', null, { tags: { name: 'products' } }],
+              ['GET', 'https://api.ecommerce.com/api/cart', null, { tags: { name: 'cart' } }],
+              ['GET', 'https://api.ecommerce.com/api/users/profile', null, { tags: { name: 'profile' } }],
+            ]);
+            
+            check(responses[0], {
+              'products endpoint status is 200': (r) => r.status === 200,
+              'products response time < 500ms': (r) => r.timings.duration < 500,
+            });
+            
+            sleep(1);
+          }
+      
+      - name: "database-performance-test"
+        description: "Database performance benchmark"
+        tool: "pgbench"
+        script: |
+          # Initialize test database
+          pgbench -i -s 50 ecommerce_test
+          
+          # Run performance test
+          pgbench -c 20 -j 4 -T 300 -P 30 ecommerce_test
+          
+          # Custom queries test
+          pgbench -c 10 -j 2 -T 180 -f custom_queries.sql ecommerce_test
+        
+        custom_queries: |
+          SELECT * FROM products WHERE category_id = :category_id LIMIT 20;
+          SELECT * FROM carts WHERE user_id = :user_id;
+          INSERT INTO cart_items (cart_id, product_id, quantity) VALUES (:cart_id, :product_id, :quantity);
+      
+      - name: "cache-performance-test" 
+        description: "Redis cache performance test"
+        tool: "redis-benchmark"
+        script: |
+          # Basic operations benchmark
+          redis-benchmark -h redis.production.svc.cluster.local -p 6379 -n 100000 -c 50
+          
+          # Specific operations
+          redis-benchmark -h redis.production.svc.cluster.local -p 6379 -t get,set -n 100000 -d 1000
+          
+          # Pipeline test
+          redis-benchmark -h redis.production.svc.cluster.local -p 6379 -n 1000000 -t get,set -P 16
+
+  benchmark-runner.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "🚀 Starting Performance Benchmarks..."
+    
+    # API Load Test with K6
+    echo "Running API Load Test..."
+    k6 run --out json=api-load-test-results.json /scripts/api-load-test.js
+    
+    # Database Performance Test
+    echo "Running Database Performance Test..."
+    pgbench -i -s 10 -h $PGHOST -p $PGPORT -U $PGUSER -d ecommerce_test
+    pgbench -c 20 -j 4 -T 300 -P 30 -h $PGHOST -p $PGPORT -U $PGUSER ecommerce_test > db-benchmark-results.txt
+    
+    # Cache Performance Test
+    echo "Running Cache Performance Test..."
+    redis-benchmark -h redis.production.svc.cluster.local -p 6379 -n 100000 -c 50 > cache-benchmark-results.txt
+    
+    # Generate Report
+    echo "Generating Performance Report..."
+    cat <<EOF > performance-report.html
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Performance Benchmark Report</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .metric { background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 5px; }
+            .good { border-left: 5px solid #4CAF50; }
+            .warning { border-left: 5px solid #FF9800; }
+            .critical { border-left: 5px solid #F44336; }
+        </style>
+    </head>
+    <body>
+        <h1>Performance Benchmark Report</h1>
+        <p>Generated: $(date)</p>
+        
+        <h2>API Load Test Results</h2>
+        <div class="metric good">
+            <strong>P95 Response Time:</strong> $(jq -r '.metrics.http_req_duration.values.p95' api-load-test-results.json)ms
+        </div>
+        
+        <h2>Database Performance</h2>
+        <div class="metric">
+            <strong>TPS:</strong> $(grep "tps =" db-benchmark-results.txt | tail -1)
+        </div>
+        
+        <h2>Cache Performance</h2>
+        <div class="metric">
+            <strong>GET Operations/sec:</strong> $(grep "GET:" cache-benchmark-results.txt | awk '{print $2}')
+        </div>
+        
+        <h2>Recommendations</h2>
+        <ul>
+            <li>Monitor P95 response times and scale if above 2s</li>
+            <li>Database TPS should be > 1000 for production load</li>
+            <li>Cache hit rate should be > 90% for optimal performance</li>
+        </ul>
+    </body>
+    </html>
+    EOF
+    
+    echo "✅ Performance benchmarks completed. Report saved to performance-report.html"

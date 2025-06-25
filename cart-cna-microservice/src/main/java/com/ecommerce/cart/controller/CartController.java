@@ -67,4 +67,39 @@ public class CartController {
             cartOps.set(c.getCustomerId(), c).subscribe();
         }).then();
     }
+    
+    @PostMapping("/cart/{customerId}/items")
+    @Timed(name = "cart.add_item", description = "Time taken to add item to cart")
+    @NewSpan("add-cart-item")
+    public Mono<Cart> addItem(@SpanTag("customerId") @PathVariable String customerId, 
+                             @RequestBody CartItem item) {
+        MDC.put("customerId", customerId);
+        LOG.info("Adding item to cart for customer: {}, product: {}", customerId, item.getProductId());
+        cartCounter.increment("operation", "add_item");
+        
+        return findById(customerId)
+            .flatMap(cart -> {
+                cart.addItem(item);
+                return createOrUpdate(Mono.just(cart));
+            })
+            .doFinally(signal -> MDC.clear());
+    }
+    
+    @DeleteMapping("/cart/{customerId}/items/{productId}")
+    @Timed(name = "cart.remove_item", description = "Time taken to remove item from cart")
+    @NewSpan("remove-cart-item")
+    public Mono<Cart> removeItem(@SpanTag("customerId") @PathVariable String customerId,
+                                @SpanTag("productId") @PathVariable String productId) {
+        MDC.put("customerId", customerId);
+        MDC.put("productId", productId);
+        LOG.info("Removing item from cart for customer: {}, product: {}", customerId, productId);
+        cartCounter.increment("operation", "remove_item");
+        
+        return findById(customerId)
+            .flatMap(cart -> {
+                cart.removeItem(productId);
+                return createOrUpdate(Mono.just(cart));
+            })
+            .doFinally(signal -> MDC.clear());
+    }
 }

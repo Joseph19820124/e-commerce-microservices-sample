@@ -1,0 +1,536 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-cache-optimization
+  namespace: production
+data:
+  redis.conf: |
+    # Memory Optimization
+    maxmemory 4gb
+    maxmemory-policy allkeys-lru
+    
+    # Performance Tuning
+    tcp-keepalive 300
+    timeout 300
+    tcp-backlog 511
+    
+    # Persistence (optimized for performance)
+    save 900 1
+    save 300 10
+    save 60 10000
+    
+    # AOF Configuration
+    appendonly yes
+    appendfilename "appendonly.aof"
+    appendfsync everysec
+    no-appendfsync-on-rewrite no
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    
+    # Memory Usage Optimization
+    hash-max-ziplist-entries 512
+    hash-max-ziplist-value 64
+    list-max-ziplist-size -2
+    list-compress-depth 0
+    set-max-intset-entries 512
+    zset-max-ziplist-entries 128
+    zset-max-ziplist-value 64
+    
+    # Client Output Buffer Limits
+    client-output-buffer-limit normal 0 0 0
+    client-output-buffer-limit slave 256mb 64mb 60
+    client-output-buffer-limit pubsub 32mb 8mb 60
+    
+    # Memory Sampling
+    maxmemory-samples 5
+    
+    # Lazy Freeing
+    lazyfree-lazy-eviction yes
+    lazyfree-lazy-expire yes
+    lazyfree-lazy-server-del yes
+    
+    # Threading
+    io-threads 4
+    io-threads-do-reads yes
+    
+    # Logging
+    loglevel notice
+    logfile ""
+
+  redis-cluster.conf: |
+    # Cluster Configuration
+    cluster-enabled yes
+    cluster-config-file nodes.conf
+    cluster-node-timeout 5000
+    cluster-announce-ip 
+    cluster-announce-port 6379
+    cluster-announce-bus-port 16379
+    
+    # Cluster Failover
+    cluster-require-full-coverage no
+    cluster-slave-validity-factor 10
+    cluster-migration-barrier 1
+    
+    # Memory and Performance
+    maxmemory 2gb
+    maxmemory-policy allkeys-lru
+    
+    # Persistence for Cluster
+    save 900 1
+    save 300 10
+    save 60 10000
+    
+    # AOF for Cluster
+    appendonly yes
+    appendfsync everysec
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-cache-cluster
+  namespace: production
+spec:
+  serviceName: redis-cache-cluster
+  replicas: 6
+  selector:
+    matchLabels:
+      app: redis-cache-cluster
+  template:
+    metadata:
+      labels:
+        app: redis-cache-cluster
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.2-alpine
+        ports:
+        - containerPort: 6379
+          name: redis
+        - containerPort: 16379
+          name: cluster
+        command:
+        - redis-server
+        - /etc/redis/redis.conf
+        - --cluster-announce-ip
+        - $(POD_IP)
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: 1000m
+            memory: 4Gi
+        volumeMounts:
+        - name: redis-config
+          mountPath: /etc/redis/
+        - name: redis-data
+          mountPath: /data
+        livenessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: redis-config
+        configMap:
+          name: redis-cache-optimization
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp3-ssd
+      resources:
+        requests:
+          storage: 20Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cache-cluster
+  namespace: production
+spec:
+  clusterIP: None
+  selector:
+    app: redis-cache-cluster
+  ports:
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  - port: 16379
+    targetPort: 16379
+    name: cluster
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cache-service
+  namespace: production
+spec:
+  selector:
+    app: redis-cache-cluster
+  ports:
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memcached-config
+  namespace: production
+data:
+  memcached.conf: |
+    # Memory allocation
+    -m 2048
+    
+    # Network settings
+    -p 11211
+    -l 0.0.0.0
+    
+    # Connection settings
+    -c 1024
+    -t 4
+    
+    # Security
+    -S
+    
+    # Logging
+    -v
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memcached
+  namespace: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: memcached
+  template:
+    metadata:
+      labels:
+        app: memcached
+    spec:
+      containers:
+      - name: memcached
+        image: memcached:1.6-alpine
+        ports:
+        - containerPort: 11211
+          name: memcached
+        command:
+        - memcached
+        - -m
+        - "2048"
+        - -p
+        - "11211"
+        - -l
+        - "0.0.0.0"
+        - -c
+        - "1024"
+        - -t
+        - "4"
+        - -v
+        resources:
+          requests:
+            cpu: 250m
+            memory: 2Gi
+          limits:
+            cpu: 500m
+            memory: 4Gi
+        livenessProbe:
+          tcpSocket:
+            port: 11211
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 11211
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memcached-service
+  namespace: production
+spec:
+  selector:
+    app: memcached
+  ports:
+  - port: 11211
+    targetPort: 11211
+    name: memcached
+  type: ClusterIP
+
+---
+# Application Cache Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-cache-config
+  namespace: production
+data:
+  cache-config.yaml: |
+    cache:
+      providers:
+        redis:
+          cluster:
+            enabled: true
+            nodes:
+              - redis-cache-cluster-0.redis-cache-cluster.production.svc.cluster.local:6379
+              - redis-cache-cluster-1.redis-cache-cluster.production.svc.cluster.local:6379
+              - redis-cache-cluster-2.redis-cache-cluster.production.svc.cluster.local:6379
+              - redis-cache-cluster-3.redis-cache-cluster.production.svc.cluster.local:6379
+              - redis-cache-cluster-4.redis-cache-cluster.production.svc.cluster.local:6379
+              - redis-cache-cluster-5.redis-cache-cluster.production.svc.cluster.local:6379
+            pool:
+              max-active: 200
+              max-idle: 50
+              min-idle: 10
+              max-wait: 2000
+            timeout: 2000
+            
+        memcached:
+          servers:
+            - memcached-service.production.svc.cluster.local:11211
+          pool:
+            max-connections: 100
+            timeout: 1000
+            
+      strategies:
+        # User Session Cache
+        user-sessions:
+          provider: redis
+          ttl: 1800  # 30 minutes
+          key-prefix: "session:"
+          compression: true
+          
+        # Product Catalog Cache
+        product-catalog:
+          provider: redis
+          ttl: 7200  # 2 hours
+          key-prefix: "product:"
+          compression: true
+          
+        # Shopping Cart Cache
+        shopping-cart:
+          provider: redis
+          ttl: 600   # 10 minutes
+          key-prefix: "cart:"
+          compression: false
+          
+        # User Profile Cache
+        user-profile:
+          provider: memcached
+          ttl: 3600  # 1 hour
+          key-prefix: "profile:"
+          
+        # Search Results Cache
+        search-results:
+          provider: redis
+          ttl: 300   # 5 minutes
+          key-prefix: "search:"
+          compression: true
+          
+        # API Response Cache
+        api-response:
+          provider: redis
+          ttl: 60    # 1 minute
+          key-prefix: "api:"
+          compression: true
+
+  cache-warming.yaml: |
+    warming:
+      schedules:
+        # Warm popular products every hour
+        - name: popular-products
+          cron: "0 * * * *"
+          strategy: product-catalog
+          query: "SELECT * FROM products WHERE popularity_score > 0.8 ORDER BY popularity_score DESC LIMIT 100"
+          
+        # Warm user sessions every 30 minutes
+        - name: active-sessions
+          cron: "*/30 * * * *"
+          strategy: user-sessions
+          query: "SELECT * FROM user_sessions WHERE expires_at > NOW() AND last_activity > NOW() - INTERVAL '1 hour'"
+          
+        # Warm search results for popular terms
+        - name: popular-searches
+          cron: "0 */6 * * *"
+          strategy: search-results
+          terms:
+            - "electronics"
+            - "clothing"
+            - "books"
+            - "home"
+            - "sports"
+
+---
+# Cache Monitoring and Alerting
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cache-monitoring-rules
+  namespace: monitoring
+data:
+  cache-rules.yaml: |
+    groups:
+    - name: cache.performance
+      interval: 15s
+      rules:
+      - record: cache:hit_rate
+        expr: |
+          (
+            sum(rate(cache_hits_total[2m])) by (service, cache_type) /
+            (
+              sum(rate(cache_hits_total[2m])) by (service, cache_type) +
+              sum(rate(cache_misses_total[2m])) by (service, cache_type)
+            )
+          ) * 100
+          
+      - record: cache:response_time:p95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(cache_request_duration_seconds_bucket[2m])) by (le, service, cache_type)
+          )
+          
+      - record: cache:memory_usage
+        expr: |
+          (
+            sum(cache_memory_used_bytes) by (instance, cache_type) /
+            sum(cache_memory_max_bytes) by (instance, cache_type)
+          ) * 100
+          
+      - record: cache:connection_pool_usage
+        expr: |
+          (
+            sum(cache_connections_active) by (service, cache_type) /
+            sum(cache_connections_max) by (service, cache_type)
+          ) * 100
+          
+      - record: cache:eviction_rate
+        expr: |
+          sum(rate(cache_evictions_total[2m])) by (service, cache_type)
+          
+    - name: cache.alerts
+      rules:
+      - alert: LowCacheHitRate
+        expr: cache:hit_rate < 80
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Low cache hit rate for {{ $labels.service }}"
+          description: "Cache hit rate is {{ $value }}% for {{ $labels.service }} {{ $labels.cache_type }}"
+          
+      - alert: HighCacheResponseTime
+        expr: cache:response_time:p95 > 0.1
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High cache response time for {{ $labels.service }}"
+          description: "P95 response time is {{ $value }}s for {{ $labels.service }} {{ $labels.cache_type }}"
+          
+      - alert: HighCacheMemoryUsage
+        expr: cache:memory_usage > 90
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "High cache memory usage for {{ $labels.instance }}"
+          description: "Memory usage is {{ $value }}% for {{ $labels.instance }} {{ $labels.cache_type }}"
+          
+      - alert: HighCacheConnectionPoolUsage
+        expr: cache:connection_pool_usage > 85
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High cache connection pool usage"
+          description: "Connection pool usage is {{ $value }}% for {{ $labels.service }} {{ $labels.cache_type }}"
+          
+      - alert: HighCacheEvictionRate
+        expr: cache:eviction_rate > 100
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High cache eviction rate"
+          description: "Eviction rate is {{ $value }}/sec for {{ $labels.service }} {{ $labels.cache_type }}"
+
+---
+# Cache Warming CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cache-warming
+  namespace: production
+spec:
+  schedule: "0 */6 * * *"  # Every 6 hours
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cache-warmer
+            image: redis:7.2-alpine
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting cache warming..."
+              
+              # Warm popular products
+              redis-cli -h redis-cache-service.production.svc.cluster.local -p 6379 <<'EOF'
+              # Set popular products with 2-hour TTL
+              SETEX product:popular:electronics:page:1 7200 '{"products": [{"id": 1, "name": "Laptop"}, {"id": 2, "name": "Phone"}]}'
+              SETEX product:popular:clothing:page:1 7200 '{"products": [{"id": 3, "name": "Shirt"}, {"id": 4, "name": "Jeans"}]}'
+              SETEX product:popular:books:page:1 7200 '{"products": [{"id": 5, "name": "Novel"}, {"id": 6, "name": "Guide"}]}'
+              EOF
+              
+              # Warm search results
+              redis-cli -h redis-cache-service.production.svc.cluster.local -p 6379 <<'EOF'
+              # Set popular search results with 5-minute TTL
+              SETEX search:electronics 300 '{"results": [{"id": 1, "score": 0.95}, {"id": 2, "score": 0.90}]}'
+              SETEX search:clothing 300 '{"results": [{"id": 3, "score": 0.92}, {"id": 4, "score": 0.88}]}'
+              SETEX search:books 300 '{"results": [{"id": 5, "score": 0.89}, {"id": 6, "score": 0.85}]}'
+              EOF
+              
+              echo "Cache warming completed successfully"
+            env:
+            - name: REDIS_HOST
+              value: "redis-cache-service.production.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "6379"
+          restartPolicy: OnFailure
+      backoffLimit: 3

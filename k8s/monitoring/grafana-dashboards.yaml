@@ -1,0 +1,364 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ecommerce-dashboards
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  ecommerce-business-overview.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "E-commerce Business Overview",
+        "tags": ["ecommerce", "business", "overview"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Revenue (Hourly)",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "kpi:revenue:hourly",
+                "legendFormat": "Revenue"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "currencyUSD",
+                "color": {
+                  "mode": "value"
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Orders (Hourly)",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "kpi:orders:hourly",
+                "legendFormat": "Orders"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "short",
+                "color": {
+                  "mode": "value"
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "New Users (Hourly)",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "kpi:new_users:hourly",
+                "legendFormat": "New Users"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "short",
+                "color": {
+                  "mode": "value"
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0}
+          },
+          {
+            "id": 4,
+            "title": "Cart Conversions",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "ecommerce:cart_conversion_rate",
+                "legendFormat": "Conversion Rate"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent",
+                "color": {
+                  "mode": "value"
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0}
+          },
+          {
+            "id": 5,
+            "title": "Order Success Rate",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "ecommerce:order_success_rate",
+                "legendFormat": "Success Rate %"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent",
+                "min": 90,
+                "max": 100
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+          },
+          {
+            "id": 6,
+            "title": "Payment Success Rate",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "ecommerce:payment_success_rate",
+                "legendFormat": "Payment Success %"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent",
+                "min": 95,
+                "max": 100
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+          }
+        ],
+        "time": {
+          "from": "now-6h",
+          "to": "now"
+        },
+        "refresh": "30s"
+      }
+    }
+  ecommerce-slo-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "E-commerce SLO Dashboard",
+        "tags": ["ecommerce", "slo", "sli"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Service Availability (SLI)",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "sli:order_service:availability",
+                "legendFormat": "Order Service"
+              },
+              {
+                "expr": "sli:cart_service:availability", 
+                "legendFormat": "Cart Service"
+              },
+              {
+                "expr": "sli:product_service:availability",
+                "legendFormat": "Product Service"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percentunit",
+                "min": 0.99,
+                "max": 1.0
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Error Budget Consumption",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "slo:order_service:error_budget",
+                "legendFormat": "Order Service Error Budget"
+              },
+              {
+                "expr": "slo:cart_service:error_budget",
+                "legendFormat": "Cart Service Error Budget"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percentunit",
+                "min": 0,
+                "max": 0.01
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "API Response Time P95",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
+                "legendFormat": "Order Service P95"
+              },
+              {
+                "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"cart-service\"}[5m])) by (le))",
+                "legendFormat": "Cart Service P95"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "s",
+                "min": 0
+              }
+            },
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+          }
+        ],
+        "time": {
+          "from": "now-1h", 
+          "to": "now"
+        },
+        "refresh": "10s"
+      }
+    }
+  ecommerce-operational-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "E-commerce Operational Dashboard",
+        "tags": ["ecommerce", "operational", "infrastructure"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Pod CPU Usage",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"default\", pod=~\".*-service.*\"}[5m])) by (pod)",
+                "legendFormat": "{{ pod }}"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent"
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Pod Memory Usage",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "sum(container_memory_usage_bytes{namespace=\"default\", pod=~\".*-service.*\"}) by (pod)",
+                "legendFormat": "{{ pod }}"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "bytes"
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "HTTP Request Rate",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "sum(rate(http_requests_total{namespace=\"default\"}[5m])) by (service)",
+                "legendFormat": "{{ service }}"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "reqps"
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+          },
+          {
+            "id": 4,
+            "title": "HTTP Error Rate",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "sum(rate(http_requests_total{namespace=\"default\", code=~\"5..\"}[5m])) by (service)",
+                "legendFormat": "{{ service }} Errors"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "reqps"
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "15s"
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning-dashboards
+  namespace: monitoring
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+    - name: 'ecommerce'
+      orgId: 1
+      folder: 'E-commerce'
+      type: file
+      disableDeletion: false
+      editable: true
+      updateIntervalSeconds: 10
+      allowUiUpdates: true
+      options:
+        path: /var/lib/grafana/dashboards/ecommerce
+---
+apiVersion: v1
+kind: ConfigMap  
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      access: proxy
+      url: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+      isDefault: true
+      editable: true
+    - name: Jaeger
+      type: jaeger
+      access: proxy
+      url: http://jaeger-query.tracing.svc.cluster.local:16686
+      editable: true
+    - name: Elasticsearch
+      type: elasticsearch
+      access: proxy
+      url: http://elasticsearch-es-http.logging.svc.cluster.local:9200
+      database: "logstash-*"
+      editable: true
