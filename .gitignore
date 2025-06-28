@@ -1,2 +1,13 @@
 .vscode
 .DS_Store
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+terraform.tfvars
+*.tfvars.json
+
+# Terraform providers (large binary files)
+terraform/azure/.terraform/providers/

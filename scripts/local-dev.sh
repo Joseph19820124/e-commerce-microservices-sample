@@ -37,6 +37,8 @@ log() {
 check_prerequisites() {
     log "INFO" "Checking prerequisites..."
     
+    local tools=("docker" "kubectl" "gradle")
+    
     local tools=("docker" "kubectl")
     local missing_tools=()
     
@@ -118,6 +120,7 @@ build_images() {
         
         if [ -d "$dir" ]; then
             log "INFO" "Building $image..."
+            (cd "$dir" && [ "$image" = "cart-service" ] && (export JAVA_HOME="/opt/homebrew/opt/openjdk" && gradle build))
             (cd "$dir" && docker build -t "$image:local" . -q)
             
             # Load image to Kind if using Kind
